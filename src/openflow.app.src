@@ -1,0 +1,13 @@
+%% -*- erlang -*-
+{application, openflow,
+ [
+  {description, ""},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { openflow_app, []}},
+  {env, []}
+ ]}.

@@ -1,0 +1,7 @@
+An OpenFlow controller written in pure erlang
+
+
+# QUICK START
+
+    $ make
+    $ ./start

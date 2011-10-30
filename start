@@ -1,0 +1,6 @@
+#!/bin/sh
+
+BASEDIR="$( cd "$( dirname "$0" )" && pwd )"
+ERL=erl
+
+$ERL -pa "$BASEDIR/ebin" "$BASEDIR/deps/gen_listener_tcp/ebin" -s openflow
