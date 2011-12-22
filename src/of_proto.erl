@@ -18,6 +18,8 @@
 %% FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 %% DEALINGS IN THE SOFTWARE.
 
+%% @doc This module implements the encoding and decoding of openflow messages.
+
 -module(of_proto).
 -export([decode/4, encode/1, parse_headers/1]).
 
@@ -28,16 +30,27 @@
 -define(OFPT_HELLO, 0).
 -define(OFPT_ECHO_REQUEST, 2).
 -define(OFPT_ECHO_REPLY, 3).
+-define(OFPT_FEATURES_REQUEST, 5).
+-define(OFPT_FEATURES_REPLY, 6).
 -define(OFPT_PACKET_IN, 10).
 -define(OFPT_PACKET_OUT, 13).
 -define(OFPT_FLOW_MOD, 14).
 
 -define(OFPAT_OUTPUT, 0).
 
+-type of_message() :: #ofp_hello{} | #ofp_echo_request{} | #ofp_echo_reply{} |
+                      #ofp_packet_in{} | #ofp_packet_out{} | #ofp_flow_mod{}.
+
+-spec decode(Version :: integer(), Type :: integer(), Xid :: integer(),
+             Message :: binary()) -> of_message() | error.
+%% @doc Decodes a message.
 decode(?OFP_VERSION, ?OFPT_HELLO, _Xid, <<>>) ->
     #ofp_hello{};
 decode(?OFP_VERSION, ?OFPT_ECHO_REQUEST, Xid, Payload) ->
     #ofp_echo_request{xid=Xid, payload=Payload};
+decode(?OFP_VERSION, ?OFPT_FEATURES_REPLY, Xid, Payload) ->
+    <<Dpid:64, _/binary>> = Payload,
+    #ofp_features_reply{xid=Xid, dpid=Dpid};
 decode(?OFP_VERSION, ?OFPT_PACKET_IN, Xid, Payload) ->
     <<BufferId:32, TotalLen:16, InPort:16,
       Reason, _Pad, Data/binary>> = Payload,
@@ -47,11 +60,15 @@ decode(?OFP_VERSION, Type, _Xid, _Payload) ->
     io:format("Can't handle message type ~B~n", [Type]),
     error.
 
+-spec encode(Message :: of_message()) -> binary().
+%% @doc Encodes a message.
 encode(#ofp_hello{}) ->
     <<?OFP_VERSION, ?OFPT_HELLO, 8:16, 0:32>>;
 encode(#ofp_echo_reply{xid=Xid, payload=Payload}) ->
     Length = 8 + byte_size(Payload),
     <<?OFP_VERSION, ?OFPT_ECHO_REPLY, Length:16, Xid:32, Payload/binary>>;
+encode(#ofp_features_request{xid=Xid}) ->
+    <<?OFP_VERSION, ?OFPT_FEATURES_REQUEST, 8:16, Xid:32>>;
 encode(#ofp_packet_out{xid=Xid, buffer_id=BufferId, in_port=InPort,
                        actions=Actions, data=Data}) ->
     ActionsData = lists:foldl(fun(A, Acc) ->
@@ -62,9 +79,34 @@ encode(#ofp_packet_out{xid=Xid, buffer_id=BufferId, in_port=InPort,
     Length = 16 + ActionsLength + byte_size(Data),
     <<?OFP_VERSION, ?OFPT_PACKET_OUT, Length:16, Xid:32, BufferId:32, InPort:16,
       ActionsLength:16, ActionsData/binary, Data/binary>>;
+encode(#ofp_flow_mod{xid=Xid, match=Match, cookie=Cookie, command=Command,
+                     idle_timeout=IdleTimeout, hard_timeout=HardTimeout,
+                     priority=Priority, buffer_id=BufferId, out_port=OutPort,
+                     flags=Flags, actions=Actions})
+  when is_record(Match, ofp_match) ->
+    EncodedMatch = encode(Match),
+    EncodedCommand = encode_command(Command),
+    EncodedPort = encode_port(OutPort),
+    EncodedFlags = encode_flags(Flags),
+    EncodedActions = lists:foldl(fun(A, Acc) ->
+                                         B = encode(A),
+                                         <<Acc/binary, B/binary>>
+                                 end, <<>>, Actions),
+    Length = 72 + byte_size(EncodedActions),
+    <<?OFP_VERSION, ?OFPT_FLOW_MOD, Length:16, Xid:32, EncodedMatch/binary,
+      Cookie:64, EncodedCommand:16, IdleTimeout:16, HardTimeout:16,
+      Priority:16, BufferId:32, EncodedPort:16, EncodedFlags:16,
+      EncodedActions/binary>>;
 encode(#ofp_action_output{port=Port, maxlen=MaxLen}) ->
-    <<?OFPAT_OUTPUT:16, 8:16, Port:16, MaxLen:16>>.
+    <<?OFPAT_OUTPUT:16, 8:16, Port:16, MaxLen:16>>;
+encode({ofp_match, Wildcards, InPort, DlSrc, DlDst, DlVlan,
+        DlVlanPcp, DlType, NwTos, NwProto, NwSrc, NwDst,
+        TpSrc, TpDst}) ->
+    <<Wildcards:32, InPort:16, DlSrc:48, DlDst:48, DlVlan:16, DlVlanPcp, 0,
+      DlType:16, NwTos, NwProto, 0:16, NwSrc:32, NwDst:32, TpSrc:16, TpDst:16>>.
 
+-spec parse_headers(Payload :: binary()) -> #ofp_match{}.
+%% @doc Extracts match fields from packet header.
 parse_headers(Payload) ->
     {DLMatch, DLPayload} = parse_dl_header(Payload),
     {NWMatch, NWPayload} = parse_nw_header(DLMatch, DLPayload),
@@ -95,3 +137,13 @@ parse_tp_header(#ofp_match{nw_proto=?UDP} = Match, Payload) ->
     {Match#ofp_match{tp_src=H#udp.src, tp_dst=H#udp.dst}, P};
 parse_tp_header(Match, Payload) ->
     {Match, Payload}.
+
+encode_command(add) -> 0;
+encode_command(modify) -> 1;
+encode_command(modify_strict) -> 2;
+encode_command(delete) -> 3;
+encode_command(delete_strict) -> 4.
+
+encode_port(none) -> 16#ffff.
+
+encode_flags([]) -> 0.

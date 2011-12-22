@@ -58,4 +58,6 @@ protocol_name(?ICMP) ->
 protocol_name(?TCP) ->
     "tcp";
 protocol_name(?UDP) ->
-    "udp".
+    "udp";
+protocol_name(_) ->
+    "unknown".

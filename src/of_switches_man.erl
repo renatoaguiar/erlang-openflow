@@ -18,6 +18,7 @@
 %% FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 %% DEALINGS IN THE SOFTWARE.
 
+%% TODO Rename of_switches_man to of_sockets
 -module(of_switches_man).
 -behaviour(gen_server).
 -define(SERVER, ?MODULE).
@@ -47,8 +48,11 @@ start_link() ->
 %% gen_server Function Definitions
 %% ------------------------------------------------------------------
 
+-include("of_records.hrl").
 -include("of_proto.hrl").
--record(state, {lsock}).
+
+-record(switch, {socket, dpid, hosts}).
+-record(state, {listen_socket, switches}).
 
 init([]) ->
     {ok, LSock} = gen_tcp:listen(?TCP_PORT, [binary, {active, false},
@@ -56,11 +60,61 @@ init([]) ->
                                              {reuseaddr, true},
                                              {packet, raw}]),
     spawn_link(fun() -> accept_loop(LSock) end),
-    {ok, #state{lsock=LSock}}.
+    {ok, #state{listen_socket=LSock, switches=[]}}.
 
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
+handle_cast({new_switch, Socket}, State) ->
+    send_message(Socket, #ofp_hello{}),
+    spawn_link(fun() -> recv_loop(Socket) end),
+    {ok, {Addr, Port}} = inet:peername(Socket),
+    error_logger:info_msg("New connection accepted from ~p:~p~n",
+                          [Addr, Port]),
+    Switches = [#switch{socket=Socket, hosts=[]}|State#state.switches],
+    {noreply, State#state{switches=Switches}};
+handle_cast({switch_message, Socket, Msg}, State) ->
+    case Msg of
+        #ofp_echo_request{xid=X, payload=P} ->
+            send_message(Socket, #ofp_echo_reply{xid=X, payload=P}),
+            {noreply, State};
+        #ofp_hello{} ->
+            send_message(Socket, #ofp_features_request{}),
+            {noreply, State};
+        #ofp_features_reply{dpid=Dpid} ->
+            Switches = State#state.switches,
+            [S] = lists:filter(fun(#switch{socket=X}) -> X =:= Socket end, Switches),
+            {noreply, State#state{switches=[S#switch{dpid=Dpid}|Switches -- [S]]}};
+        #ofp_packet_in{data=Data, buffer_id=BufferId, in_port=InPort} ->
+            {TPMatch, _Payload} = of_proto:parse_headers(Data),
+            Match = TPMatch#ofp_match{in_port = InPort},
+            error_logger:info_msg("New Flow: ~.16B -> ~.16B (~p/~s)~n",
+                                  [Match#ofp_match.dl_src,
+                                   Match#ofp_match.dl_dst,
+                                   Match#ofp_match.tp_dst,
+                                   of_match:protocol_name(
+                                     Match#ofp_match.nw_proto)]),
+            Switches = State#state.switches,
+            [S] = lists:filter(fun(#switch{socket=X}) -> X =:= Socket end, Switches),
+            case lists:keyfind(Match#ofp_match.dl_dst, 1, S#switch.hosts) of
+                false ->
+                    send_message(Socket, #ofp_packet_out{
+                                   buffer_id=BufferId, in_port=InPort, data=Data,
+                                   actions=[#ofp_action_output{port=?OFPP_FLOOD}]});
+                {_, Port} ->
+                    send_message(Socket, #ofp_flow_mod{
+                                   match=Match, command=modify, hard_timeout=30,
+                                   actions=[#ofp_action_output{port=Port}]}),
+                    send_message(Socket, #ofp_packet_out{
+                                   buffer_id=BufferId, in_port=InPort, data=Data,
+                                   actions=[#ofp_action_output{port=Port}]})
+            end,
+            {noreply, State#state{switches=[S#switch{hosts=[{Match#ofp_match.dl_src, InPort}|S#switch.hosts]}|Switches -- [S]]}};
+        M ->
+            error_logger:info_msg("Unhandled message: ~p~n", [M]),
+            {noreply, State}
+
+    end;
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -68,7 +122,7 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, State) ->
-    ok = gen_tcp:close(State#state.lsock),
+    ok = gen_tcp:close(State#state.listen_socket),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -79,34 +133,14 @@ code_change(_OldVsn, State, _Extra) ->
 %% ------------------------------------------------------------------
 
 accept_loop(LSocket) ->
-    AcceptRet = gen_tcp:accept(LSocket),
-    spawn(fun() ->
-                  {ok, Socket} = AcceptRet,
-                  {ok, {Addr, Port}} = inet:peername(Socket),
-                  error_logger:info_msg("New connection accepted from ~p:~p~n",
-                                        [Addr, Port]),
-                  send_message(Socket, #ofp_hello{}),
-                  #ofp_hello{} = recv_message(Socket),
-                  loop(Socket)
-          end),
+    {ok, Socket} = gen_tcp:accept(LSocket),
+    gen_server:cast(?SERVER, {new_switch, Socket}),
     accept_loop(LSocket).
 
-loop(Socket) ->
+recv_loop(Socket) ->
     Msg = recv_message(Socket),
-    case Msg of
-        #ofp_echo_request{xid=X, payload=P} ->
-            send_message(Socket, #ofp_echo_reply{xid=X, payload=P});
-        M ->
-            spawn(fun() ->
-                case process_message(M) of
-                    {reply, R} ->
-                        send_message(Socket, R);
-                    {noreply, R} ->
-                        R
-                end
-            end)
-    end,
-    loop(Socket).
+    gen_server:cast(?SERVER, {switch_message, Socket, Msg}),
+    recv_loop(Socket).
 
 recv_message(Socket) ->
     {ok, <<Version, Type, Length:16, Xid:32>>} = gen_tcp:recv(Socket, 8),
@@ -121,20 +155,3 @@ recv_message(Socket) ->
 
 send_message(Socket, Msg) ->
     gen_tcp:send(Socket, of_proto:encode(Msg)).
-
-process_message(Msg) ->
-    case Msg of
-        #ofp_packet_in{data=Data, buffer_id=BufferId, in_port=InPort} ->
-            {Match, _Payload} = of_proto:parse_headers(Data),
-            error_logger:info_msg("Packet In: ~.16B -> ~.16B (~B/~s)~n",
-                                  [Match#ofp_match.dl_src,
-                                   Match#ofp_match.dl_dst,
-                                   Match#ofp_match.tp_dst,
-                                   of_match:protocol_name(
-                                     Match#ofp_match.nw_proto)]),
-            {reply, #ofp_packet_out{
-               buffer_id=BufferId, in_port=InPort, data=Data,
-               actions=[#ofp_action_output{port=?OFPP_FLOOD}]}};
-        _ ->
-            {noreply, ok}
-    end.
