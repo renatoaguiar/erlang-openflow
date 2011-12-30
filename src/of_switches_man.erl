@@ -22,7 +22,6 @@
 -module(of_switches_man).
 -behaviour(gen_server).
 -define(SERVER, ?MODULE).
--define(TCP_PORT, 6633).
 
 %% ------------------------------------------------------------------
 %% API Function Exports
@@ -54,7 +53,8 @@ start_link() ->
 -record(state, {listen_socket, switches}).
 
 init([]) ->
-    {ok, LSock} = gen_tcp:listen(?TCP_PORT, [binary, {active, false},
+    {ok, Port} = application:get_env(port),
+    {ok, LSock} = gen_tcp:listen(Port, [binary, {active, false},
                                              {nodelay, true},
                                              {reuseaddr, true},
                                              {packet, raw}]),

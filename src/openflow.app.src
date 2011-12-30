@@ -9,5 +9,7 @@
                   stdlib
                  ]},
   {mod, { openflow_app, []}},
-  {env, []}
+  {env, [
+         {port, 6633}
+        ]}
  ]}.
