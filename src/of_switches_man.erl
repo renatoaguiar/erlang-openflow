@@ -48,7 +48,6 @@ start_link() ->
 %% gen_server Function Definitions
 %% ------------------------------------------------------------------
 
--include("of_records.hrl").
 -include("of_proto.hrl").
 
 -record(switch, {socket, dpid, hosts}).
