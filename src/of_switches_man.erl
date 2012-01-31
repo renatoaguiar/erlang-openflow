@@ -1,4 +1,4 @@
-%% Copyright (c) 2011 Renato Aguiar <renato@aguiar.info>
+%% Copyright (c) 2012 Renato Aguiar <renato@aguiar.info>
 %%
 %% Permission is hereby granted, free of charge, to any person obtaining a
 %% copy of this software and associated documentation files (the "Software"),
@@ -27,7 +27,7 @@
 %% API Function Exports
 %% ------------------------------------------------------------------
 
--export([start_link/0]).
+-export([start_link/0, cast/2, call/2]).
 
 %% ------------------------------------------------------------------
 %% gen_server Function Exports
@@ -43,14 +43,20 @@
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
+cast(Method, Args) ->
+    gen_server:cast(?SERVER, {Method, Args}).
+
+call(Method, Args) ->
+    gen_server:call(?SERVER, {Method, Args}).
+
 %% ------------------------------------------------------------------
 %% gen_server Function Definitions
 %% ------------------------------------------------------------------
 
 -include("of_proto.hrl").
+-include("of_switches_man.hrl").
 
--record(switch, {socket, dpid, hosts}).
--record(state, {listen_socket, switches}).
+-record(state, {listen_socket, switches, handlers}).
 
 init([]) ->
     {ok, Port} = application:get_env(port),
@@ -59,18 +65,23 @@ init([]) ->
                                              {reuseaddr, true},
                                              {packet, raw}]),
     spawn_link(fun() -> accept_loop(LSock) end),
-    {ok, #state{listen_socket=LSock, switches=[]}}.
+    {ok, #state{listen_socket=LSock, switches=[], handlers=[]}}.
 
 handle_call(_Request, _From, State) ->
-    {reply, ok, State}.
+    {reply, error, State}.
 
+handle_cast({send_message, Switch, Message}, State) ->
+    gen_tcp:send(Switch#of_switch.socket, of_proto:encode(Message)),
+    {noreply, State};
+handle_cast({register_handler, Fun}, State) ->
+    {noreply, State#state{handlers=[Fun|State#state.handlers]}};
 handle_cast({new_switch, Socket}, State) ->
     send_message(Socket, #ofp_hello{}),
     spawn_link(fun() -> recv_loop(Socket) end),
     {ok, {Addr, Port}} = inet:peername(Socket),
     error_logger:info_msg("New connection accepted from ~p:~p~n",
                           [Addr, Port]),
-    Switches = [#switch{socket=Socket, hosts=[]}|State#state.switches],
+    Switches = [#of_switch{socket=Socket, hosts=[]}|State#state.switches],
     {noreply, State#state{switches=Switches}};
 handle_cast({switch_message, Socket, Msg}, State) ->
     case Msg of
@@ -82,37 +93,13 @@ handle_cast({switch_message, Socket, Msg}, State) ->
             {noreply, State};
         #ofp_features_reply{dpid=Dpid} ->
             Switches = State#state.switches,
-            [S] = lists:filter(fun(#switch{socket=X}) -> X =:= Socket end, Switches),
-            {noreply, State#state{switches=[S#switch{dpid=Dpid}|Switches -- [S]]}};
-        #ofp_packet_in{data=Data, buffer_id=BufferId, in_port=InPort} ->
-            {TPMatch, _Payload} = of_proto:parse_headers(Data),
-            Match = TPMatch#ofp_match{in_port = InPort},
-            error_logger:info_msg("New Flow: ~.16B -> ~.16B (~p/~s)~n",
-                                  [Match#ofp_match.dl_src,
-                                   Match#ofp_match.dl_dst,
-                                   Match#ofp_match.tp_dst,
-                                   of_match:protocol_name(
-                                     Match#ofp_match.nw_proto)]),
-            Switches = State#state.switches,
-            [S] = lists:filter(fun(#switch{socket=X}) -> X =:= Socket end, Switches),
-            case lists:keyfind(Match#ofp_match.dl_dst, 1, S#switch.hosts) of
-                false ->
-                    send_message(Socket, #ofp_packet_out{
-                                   buffer_id=BufferId, in_port=InPort, data=Data,
-                                   actions=[#ofp_action_output{port=?OFPP_FLOOD}]});
-                {_, Port} ->
-                    send_message(Socket, #ofp_flow_mod{
-                                   match=Match, command=modify, hard_timeout=30,
-                                   actions=[#ofp_action_output{port=Port}]}),
-                    send_message(Socket, #ofp_packet_out{
-                                   buffer_id=BufferId, in_port=InPort, data=Data,
-                                   actions=[#ofp_action_output{port=Port}]})
-            end,
-            {noreply, State#state{switches=[S#switch{hosts=[{Match#ofp_match.dl_src, InPort}|S#switch.hosts]}|Switches -- [S]]}};
+            [S] = lists:filter(fun(#of_switch{socket=X}) -> X =:= Socket end, Switches),
+            {noreply, State#state{switches=[S#of_switch{dpid=Dpid}|Switches -- [S]]}};
         M ->
-            error_logger:info_msg("Unhandled message: ~p~n", [M]),
+            [S] = lists:filter(fun(#of_switch{socket=X}) -> X =:= Socket end,
+                               State#state.switches),
+            lists:foreach(fun(P) -> P(S, M) end, State#state.handlers),
             {noreply, State}
-
     end;
 handle_cast(_Msg, State) ->
     {noreply, State}.

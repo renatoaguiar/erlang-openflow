@@ -1,4 +1,4 @@
-%% Copyright (c) 2011 Renato Aguiar <renato@aguiar.info>
+%% Copyright (c) 2012 Renato Aguiar <renato@aguiar.info>
 %%
 %% Permission is hereby granted, free of charge, to any person obtaining a
 %% copy of this software and associated documentation files (the "Software"),
@@ -99,11 +99,12 @@ encode(#ofp_flow_mod{xid=Xid, match=Match, cookie=Cookie, command=Command,
       EncodedActions/binary>>;
 encode(#ofp_action_output{port=Port, maxlen=MaxLen}) ->
     <<?OFPAT_OUTPUT:16, 8:16, Port:16, MaxLen:16>>;
-encode({ofp_match, Wildcards, InPort, DlSrc, DlDst, DlVlan,
-        DlVlanPcp, DlType, NwTos, NwProto, NwSrc, NwDst,
-        TpSrc, TpDst}) ->
-    <<Wildcards:32, InPort:16, DlSrc:48, DlDst:48, DlVlan:16, DlVlanPcp, 0,
-      DlType:16, NwTos, NwProto, 0:16, NwSrc:32, NwDst:32, TpSrc:16, TpDst:16>>.
+encode({ofp_match, InPort, DlSrc, DlDst, DlVlan, DlVlanPcp, DlType, NwTos,
+        NwProto, NwSrc, NwDst, TpSrc, TpDst}) ->
+    EncodedWildcards = 0, %% TODO calculate wildcards from undefined fields
+    <<EncodedWildcards:32, InPort:16, DlSrc:48, DlDst:48, DlVlan:16,
+      DlVlanPcp, 0, DlType:16, NwTos, NwProto, 0:16, NwSrc:32, NwDst:32,
+      TpSrc:16, TpDst:16>>.
 
 -spec parse_headers(Payload :: binary()) -> #ofp_match{}.
 %% @doc Extracts match fields from packet header.
@@ -114,17 +115,16 @@ parse_headers(Payload) ->
 
 parse_dl_header(Payload) ->
     {H, P} = of_match:decode_ethernet(Payload),
-    {#ofp_match{wildcards=0, dl_src=H#ether.src,
-                dl_dst=H#ether.dst, dl_vlan=H#ether.vid,
-                dl_vlan_pcp=H#ether.pcp, dl_type=H#ether.proto},
-     P}.
+    {#ofp_match{dl_src=H#ether.src, dl_dst=H#ether.dst,
+                dl_vlan=H#ether.vid, dl_vlan_pcp=H#ether.pcp,
+                dl_type=H#ether.proto}, P}.
 
 parse_nw_header(#ofp_match{dl_type=?IPV4} = Match, Payload) ->
     {H, P} = of_match:decode_ipv4(Payload),
     {Match#ofp_match{nw_tos=H#ipv4.tos, nw_proto=H#ipv4.proto,
                      nw_src=H#ipv4.src, nw_dst=H#ipv4.dst}, P};
-parse_nw_header(Match, Payload) ->
-    {Match, Payload}.
+parse_nw_header(Match, _Payload) ->
+    {Match, <<>>}.
 
 parse_tp_header(#ofp_match{nw_proto=?ICMP} = Match, Payload) ->
     {H, P} = of_match:decode_icmp(Payload),
@@ -135,8 +135,8 @@ parse_tp_header(#ofp_match{nw_proto=?TCP} = Match, Payload) ->
 parse_tp_header(#ofp_match{nw_proto=?UDP} = Match, Payload) ->
     {H, P} = of_match:decode_udp(Payload),
     {Match#ofp_match{tp_src=H#udp.src, tp_dst=H#udp.dst}, P};
-parse_tp_header(Match, Payload) ->
-    {Match, Payload}.
+parse_tp_header(Match, _Payload) ->
+    {Match, <<>>}.
 
 encode_command(add) -> 0;
 encode_command(modify) -> 1;

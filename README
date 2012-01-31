@@ -1,7 +1,12 @@
-An OpenFlow controller written in pure erlang
+# Introduction
 
+The erlang-openflow is a pure erlang implementation of an openflow controller
+which is being contructed on top of OTP framework.
 
-# QUICK START
+# Quick start
 
     $ make
     $ ./start
+    (The controller will start to listen to 6633 port)
+
+TIP: Use mininet (http://openflow.org/mininet) to simulate an openflow network.

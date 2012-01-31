@@ -1,0 +1,1 @@
+-record(of_switch, {socket, dpid, hosts}).

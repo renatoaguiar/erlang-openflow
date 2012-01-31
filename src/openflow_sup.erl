@@ -1,4 +1,4 @@
-%% Copyright (c) 2011 Renato Aguiar <renato@aguiar.info>
+%% Copyright (c) 2012 Renato Aguiar <renato@aguiar.info>
 %%
 %% Permission is hereby granted, free of charge, to any person obtaining a
 %% copy of this software and associated documentation files (the "Software"),

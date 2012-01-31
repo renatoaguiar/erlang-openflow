@@ -3,4 +3,4 @@
 BASEDIR="$( cd "$( dirname "$0" )" && pwd )"
 ERL=erl
 
-$ERL -pa "$BASEDIR/ebin" -s openflow
+$ERL -pa "$BASEDIR/ebin" -s openflow $*
